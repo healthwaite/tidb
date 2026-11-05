@@ -356,6 +356,67 @@ func TestRangeTreeMerge(t *testing.T) {
 	}
 }
 
+func nonTableRange(startKey string, bytes uint64) *rtree.Range {
+	return &rtree.Range{
+		KeyRange: rtree.KeyRange{StartKey: []byte(startKey), EndKey: []byte(startKey + "\xff")},
+		Files:    []*backuppb.File{{TotalKvs: 1, TotalBytes: bytes}},
+	}
+}
+
+func TestRangeTreeMergeNonTable(t *testing.T) {
+	keys := make([]string, 0, 20)
+	for i := 0; i < 20; i++ {
+		keys = append(keys, fmt.Sprintf("key/%04d", i))
+	}
+	build := func() rtree.RangeStatsTree {
+		tree := rtree.NewRangeStatsTree()
+		for _, k := range keys {
+			tree.InsertRange(nonTableRange(k, 1), 1, 1)
+		}
+		return tree
+	}
+	// Undecodable keys are never merged by the TiDB-aware path.
+	tree := build()
+	require.Len(t, tree.MergedRanges(10, 10), 20)
+
+	tree = build()
+	merged := tree.MergedNonTableRanges(10, 10)
+	require.Len(t, merged, 2)
+	for i, rg := range merged {
+		require.Equal(t, []byte(keys[i*10]), rg.StartKey)
+		require.Equal(t, []byte(keys[i*10+9]+"\xff"), rg.EndKey)
+		require.Len(t, rg.Files, 10)
+	}
+	tree = build()
+	require.Len(t, tree.MergedNonTableRanges(1000, 5), 4)
+	tree = build()
+	require.Len(t, tree.MergedNonTableRanges(4, 1000), 5)
+}
+
+// A raw key beginning with 't' can look like a TiDB record key, so NeedsMerge
+// applies table rules to it that are meaningless for raw data.
+func TestNeedsMergeRawKeyLooksLikeTableKey(t *testing.T) {
+	rec := func(tableID int64, suffix string) *rtree.RangeStats {
+		key := string(tablecodec.GenTableRecordPrefix(tableID)) + suffix
+		return &rtree.RangeStats{Range: *nonTableRange(key, 1)}
+	}
+	plain := &rtree.RangeStats{Range: *nonTableRange("key/1", 1)}
+	plain2 := &rtree.RangeStats{Range: *nonTableRange("key/2", 1)}
+	require.False(t, rtree.NeedsMerge(plain, plain2, 10, 10))
+	require.True(t, rtree.NeedsMergeNonTable(plain, plain2, 10, 10))
+
+	// Table-shaped keys in different "tables" are decoded and refused despite being tiny.
+	a, b := rec(1, "user-a"), rec(2, "user-b")
+	require.False(t, rtree.NeedsMerge(a, b, 10, 10))
+	require.True(t, rtree.NeedsMergeNonTable(a, b, 10, 10))
+
+	require.False(t, rtree.NeedsMerge(rec(1, "x"), plain, 10, 10))
+	require.True(t, rtree.NeedsMergeNonTable(rec(1, "x"), plain, 10, 10))
+
+	require.False(t, rtree.NeedsMergeNonTable(a, b, 1, 10))
+	require.False(t, rtree.NeedsMergeNonTable(a, b, 10, 1))
+}
+
 func buildProgressRange(startKey, endKey string) *rtree.ProgressRange {
 	pr := &rtree.ProgressRange{
 		Res: rtree.NewRangeTree(),

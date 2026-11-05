@@ -127,10 +127,23 @@ func (rangeTree *RangeStatsTree) InsertRange(rg *Range, rangeSize, rangeCount ui
 
 // MergedRanges output the sortedRanges having merged according to given `splitSizeBytes` and `splitKeyCount`.
 func (rangeTree *RangeStatsTree) MergedRanges(splitSizeBytes, splitKeyCount uint64) []RangeStats {
+	return rangeTree.mergedRanges(splitSizeBytes, splitKeyCount, NeedsMerge)
+}
+
+// MergedNonTableRanges is like MergedRanges but for raw and txn KV ranges, whose keys
+// are not TiDB table/index keys, so only size and key count limit merging.
+func (rangeTree *RangeStatsTree) MergedNonTableRanges(splitSizeBytes, splitKeyCount uint64) []RangeStats {
+	return rangeTree.mergedRanges(splitSizeBytes, splitKeyCount, NeedsMergeNonTable)
+}
+
+func (rangeTree *RangeStatsTree) mergedRanges(
+	splitSizeBytes, splitKeyCount uint64,
+	needsMerge func(left, right *RangeStats, splitSizeBytes, splitKeyCount uint64) bool,
+) []RangeStats {
 	var mergeTargetIndex int = -1
 	sortedRanges := make([]RangeStats, 0, rangeTree.Len())
 	rangeTree.Ascend(func(rg *RangeStats) bool {
-		if mergeTargetIndex < 0 || !NeedsMerge(&sortedRanges[mergeTargetIndex], rg, splitSizeBytes, splitKeyCount) {
+		if mergeTargetIndex < 0 || !needsMerge(&sortedRanges[mergeTargetIndex], rg, splitSizeBytes, splitKeyCount) {
 			// unintialized or the sortedRanges[mergeTargetIndex] does not need to merged
 			mergeTargetIndex += 1
 			sortedRanges = append(sortedRanges, *rg)
@@ -147,17 +160,28 @@ func (rangeTree *RangeStatsTree) MergedRanges(splitSizeBytes, splitKeyCount uint
 	return sortedRanges
 }
 
-// NeedsMerge checks whether two ranges needs to be merged.
-func NeedsMerge(left, right *RangeStats, splitSizeBytes, splitKeyCount uint64) bool {
+// NeedsMergeNonTable checks whether two raw or txn KV ranges need to be merged.
+// It only considers size and key count as the keys are not TiDB keys.
+func NeedsMergeNonTable(left, right *RangeStats, splitSizeBytes, splitKeyCount uint64) bool {
+	return withinMergeLimits(left, right, splitSizeBytes, splitKeyCount)
+}
+
+func withinMergeLimits(left, right *RangeStats, splitSizeBytes, splitKeyCount uint64) bool {
 	leftBytes, leftKeys := left.BytesAndKeys()
 	rightBytes, rightKeys := right.BytesAndKeys()
 	if rightBytes == 0 {
 		return true
 	}
-	if leftBytes+rightBytes > splitSizeBytes {
-		return false
+	return leftBytes+rightBytes <= splitSizeBytes && leftKeys+rightKeys <= splitKeyCount
+}
+
+// NeedsMerge checks whether two ranges needs to be merged.
+func NeedsMerge(left, right *RangeStats, splitSizeBytes, splitKeyCount uint64) bool {
+	rightBytes, _ := right.BytesAndKeys()
+	if rightBytes == 0 {
+		return true
 	}
-	if leftKeys+rightKeys > splitKeyCount {
+	if !withinMergeLimits(left, right, splitSizeBytes, splitKeyCount) {
 		return false
 	}
 	tableID1, indexID1, isRecord1, err1 := tablecodec.DecodeKeyHead(left.StartKey)

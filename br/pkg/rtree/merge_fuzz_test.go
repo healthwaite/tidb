@@ -18,5 +18,6 @@ func FuzzMerge(f *testing.F) {
 		left := rtree.RangeStats{Range: rtree.Range{KeyRange: rtree.KeyRange{StartKey: a}, Files: []*backup.File{{TotalKvs: 1, TotalBytes: 1}}}}
 		right := rtree.RangeStats{Range: rtree.Range{KeyRange: rtree.KeyRange{StartKey: b}, Files: []*backup.File{{TotalKvs: 1, TotalBytes: 1}}}}
 		rtree.NeedsMerge(&left, &right, 42, 42)
+		rtree.NeedsMergeNonTable(&left, &right, 42, 42)
 	})
 }
