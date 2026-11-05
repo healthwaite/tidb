@@ -38,6 +38,26 @@ func MergeAndRewriteFileRanges(
 	splitSizeBytes,
 	splitKeyCount uint64,
 ) ([]rtree.RangeStats, *MergeRangesStat, error) {
+	return mergeAndRewriteFileRanges(files, rewriteRules, splitSizeBytes, splitKeyCount, false)
+}
+
+// MergeAndRewriteNonTableFileRanges is like MergeAndRewriteFileRanges but for
+// raw and txn KV backups, whose keys are not TiDB table/index keys.
+func MergeAndRewriteNonTableFileRanges(
+	files []*backuppb.File,
+	splitSizeBytes,
+	splitKeyCount uint64,
+) ([]rtree.RangeStats, *MergeRangesStat, error) {
+	return mergeAndRewriteFileRanges(files, nil, splitSizeBytes, splitKeyCount, true)
+}
+
+func mergeAndRewriteFileRanges(
+	files []*backuppb.File,
+	rewriteRules *RewriteRules,
+	splitSizeBytes,
+	splitKeyCount uint64,
+	nonTable bool,
+) ([]rtree.RangeStats, *MergeRangesStat, error) {
 	if len(files) == 0 {
 		return []rtree.RangeStats{}, &MergeRangesStat{}, nil
 	}
@@ -106,7 +126,12 @@ func MergeAndRewriteFileRanges(
 		}
 	}
 
-	sortedRanges := rangeTree.MergedRanges(splitSizeBytes, splitKeyCount)
+	var sortedRanges []rtree.RangeStats
+	if nonTable {
+		sortedRanges = rangeTree.MergedNonTableRanges(splitSizeBytes, splitKeyCount)
+	} else {
+		sortedRanges = rangeTree.MergedRanges(splitSizeBytes, splitKeyCount)
+	}
 	regionBytesAvg := totalBytes / uint64(totalRegions)
 	regionKeysAvg := totalKvs / uint64(totalRegions)
 	mergedRegionBytesAvg := totalBytes / uint64(len(sortedRanges))
