@@ -237,6 +237,41 @@ func TestMergeRawKVRanges(t *testing.T) {
 	require.Equal(t, 1, stat.MergedRegions)
 }
 
+func TestMergeNonTableManySmallFiles(t *testing.T) {
+	files := make([]*backuppb.File, 0, 100)
+	for i := 0; i < 100; i++ {
+		files = append(files, &backuppb.File{
+			Name:       fmt.Sprintf("%d_default.sst", i),
+			StartKey:   []byte(fmt.Sprintf("key/%04d/a", i)),
+			EndKey:     []byte(fmt.Sprintf("key/%04d/b", i)),
+			TotalKvs:   1,
+			TotalBytes: 1,
+			Cf:         "default",
+		})
+	}
+	// The TiDB-aware path cannot decode these keys and keeps every file separate.
+	_, stat, err := utils.MergeAndRewriteFileRanges(
+		files, nil, conn.DefaultMergeRegionSizeBytes, conn.DefaultMergeRegionKeyCount)
+	require.NoError(t, err)
+	require.Equal(t, 100, stat.MergedRegions)
+
+	rngs, stat, err := utils.MergeAndRewriteNonTableFileRanges(
+		files, conn.DefaultMergeRegionSizeBytes, conn.DefaultMergeRegionKeyCount)
+	require.NoError(t, err)
+	require.Equal(t, 100, stat.TotalRegions)
+	require.Equal(t, 1, stat.MergedRegions)
+	require.Len(t, rngs, 1)
+	require.Len(t, rngs[0].Files, 100)
+	for _, f := range rngs[0].Files {
+		require.LessOrEqual(t, bytes.Compare(rngs[0].StartKey, f.StartKey), 0)
+		require.GreaterOrEqual(t, bytes.Compare(rngs[0].EndKey, f.EndKey), 0)
+	}
+
+	rngs, _, err = utils.MergeAndRewriteNonTableFileRanges(files, 1000, 10)
+	require.NoError(t, err)
+	require.Len(t, rngs, 10)
+}
+
 func TestInvalidRanges(t *testing.T) {
 	files := make([]*backuppb.File, 0)
 	fb := fileBulder{}
